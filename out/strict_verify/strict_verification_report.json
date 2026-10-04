@@ -1,0 +1,93 @@
+{
+  "rules": {
+    "quality_pass_all": true,
+    "ankle_below_hip_ratio_min": 0.995,
+    "vertical_chain_ok_ratio_min": 0.98,
+    "bone_length_cv_max": 0.09,
+    "upper_arm_symmetry_error_max": 0.03,
+    "forearm_symmetry_error_max": 0.02,
+    "reproj_improvement_min": 0.6,
+    "reproj_after_rmse_max": 0.09
+  },
+  "runs": [
+    {
+      "run": 1,
+      "quality": {
+        "ankle_below_hip_ratio": 1.0,
+        "vertical_chain_ok_ratio": 1.0,
+        "bone_length_cv": 0.08188808220438659,
+        "upper_arm_symmetry_error": 0.02233687711505822,
+        "forearm_symmetry_error": 0.002629686204991159,
+        "pass_ankle_below_hip": true,
+        "pass_vertical_chain": true,
+        "pass_bone_cv": true,
+        "pass_symmetry": true,
+        "pass_all": true
+      },
+      "reprojection": {
+        "applied": true,
+        "iterations": 2,
+        "step": 0.4,
+        "depth_smooth": 0.1,
+        "reproj_rmse_before": 0.23788560926914215,
+        "reproj_rmse_after": 0.0767744854092598
+      },
+      "reproj_improve": 0.6772630103807681
+    },
+    {
+      "run": 2,
+      "quality": {
+        "ankle_below_hip_ratio": 1.0,
+        "vertical_chain_ok_ratio": 1.0,
+        "bone_length_cv": 0.08188808220438659,
+        "upper_arm_symmetry_error": 0.02233687711505822,
+        "forearm_symmetry_error": 0.002629686204991159,
+        "pass_ankle_below_hip": true,
+        "pass_vertical_chain": true,
+        "pass_bone_cv": true,
+        "pass_symmetry": true,
+        "pass_all": true
+      },
+      "reprojection": {
+        "applied": true,
+        "iterations": 2,
+        "step": 0.4,
+        "depth_smooth": 0.1,
+        "reproj_rmse_before": 0.23788560926914215,
+        "reproj_rmse_after": 0.0767744854092598
+      },
+      "reproj_improve": 0.6772630103807681
+    },
+    {
+      "run": 3,
+      "quality": {
+        "ankle_below_hip_ratio": 1.0,
+        "vertical_chain_ok_ratio": 1.0,
+        "bone_length_cv": 0.08188808220438659,
+        "upper_arm_symmetry_error": 0.02233687711505822,
+        "forearm_symmetry_error": 0.002629686204991159,
+        "pass_ankle_below_hip": true,
+        "pass_vertical_chain": true,
+        "pass_bone_cv": true,
+        "pass_symmetry": true,
+        "pass_all": true
+      },
+      "reprojection": {
+        "applied": true,
+        "iterations": 2,
+        "step": 0.4,
+        "depth_smooth": 0.1,
+        "reproj_rmse_before": 0.23788560926914215,
+        "reproj_rmse_after": 0.0767744854092598
+      },
+      "reproj_improve": 0.6772630103807681
+    }
+  ],
+  "consistency": {
+    "bone_cv_std": 0.0,
+    "upper_arm_sym_std": 0.0,
+    "forearm_sym_std": 0.0,
+    "reproj_after_std": 0.0
+  },
+  "status": "PASS"
+}
