@@ -1,8 +1,8 @@
 """자세 추정 엔진 추상화.
 
-MVP는 MediaPipe(BlazePose)를 사용한다. 저조도/역광·소형 피사체에서
-추정이 실패하면 YOLO-pose 등으로 교체할 수 있도록, 모든 엔진이 동일한
-출력 규약(프레임별 관절 좌표 배열)을 따르도록 인터페이스를 통일한다.
+현재 파이프라인은 Ultralytics YOLO-pose를 단일 2D 추정 엔진으로 사용한다.
+출력 규약(프레임별 관절 좌표 배열)을 고정해 후속 3D 추론과 운동학 분석이
+같은 형식을 소비하도록 유지한다.
 
 출력 규약
 ---------
@@ -14,6 +14,8 @@ estimate(frame_bgr) -> np.ndarray shape (K, 3) 또는 None
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -38,74 +40,6 @@ COCO_EDGES = [
 ]
 
 
-class MediaPipeEngine:
-    """MediaPipe PoseLandmarker(BlazePose, Tasks API) 래퍼.
-
-    33개 BlazePose 랜드마크를 COCO 17로 매핑한다. VIDEO 모드로 실행하여
-    프레임 간 시간 정보를 활용(추적 안정화).
-    """
-
-    name = "mediapipe"
-    keypoint_names = COCO_KEYPOINTS
-    edges = COCO_EDGES
-
-    # BlazePose 33 랜드마크 → COCO 17 인덱스 매핑.
-    _MP_TO_COCO = {
-        0: 0, 2: 1, 5: 2, 7: 3, 8: 4,
-        11: 5, 12: 6, 13: 7, 14: 8, 15: 9, 16: 10,
-        23: 11, 24: 12, 25: 13, 26: 14, 27: 15, 28: 16,
-    }
-    _DEFAULT_MODEL = "models/pose_landmarker_heavy.task"
-
-    def __init__(self, model_path: str | None = None, min_detection_confidence: float = 0.5):
-        import mediapipe as mp
-        from mediapipe.tasks.python import BaseOptions
-        from mediapipe.tasks.python.vision import (
-            PoseLandmarker, PoseLandmarkerOptions, RunningMode,
-        )
-
-        self._mp = mp
-        path = model_path or self._DEFAULT_MODEL
-        if not os.path.exists(path):
-            raise FileNotFoundError(
-                f"MediaPipe 모델 없음: {path}\n"
-                "다운로드: curl -sL -o models/pose_landmarker_heavy.task "
-                "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-                "pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task"
-            )
-        opts = PoseLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=path),
-            running_mode=RunningMode.VIDEO,
-            min_pose_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=0.5,
-            num_poses=1,
-        )
-        self._lm = PoseLandmarker.create_from_options(opts)
-        self._ts = 0  # ms 타임스탬프(VIDEO 모드는 단조 증가 필요)
-
-    def estimate(self, frame_bgr):
-        import cv2
-
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        mp_img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
-        self._ts += 33  # ~30fps 가정(상대 간격만 의미 있음)
-        result = self._lm.detect_for_video(mp_img, self._ts)
-        if not result.pose_landmarks:
-            return None
-
-        h, w = frame_bgr.shape[:2]
-        lm = result.pose_landmarks[0]
-        out = np.full((17, 3), np.nan, dtype=np.float32)
-        for mp_idx, coco_idx in self._MP_TO_COCO.items():
-            p = lm[mp_idx]
-            vis = getattr(p, "visibility", 1.0)
-            out[coco_idx] = (p.x * w, p.y * h, vis)
-        return out
-
-    def close(self):
-        self._lm.close()
-
-
 class YoloEngine:
     """Ultralytics YOLO-pose 래퍼(역광·소형 피사체 대비용). COCO 17 네이티브."""
 
@@ -121,6 +55,19 @@ class YoloEngine:
 
     def estimate(self, frame_bgr):
         res = self._model.predict(frame_bgr, conf=self._conf, verbose=False)[0]
+        return self._extract_best_person(res)
+
+    def estimate_batch(self, frames_bgr, batch_size=16):
+        """여러 프레임을 배치 추론으로 처리해 CPU 오버헤드를 줄인다."""
+        outputs = []
+        frames = list(frames_bgr)
+        for start in range(0, len(frames), batch_size):
+            chunk = frames[start:start + batch_size]
+            results = self._model.predict(chunk, conf=self._conf, verbose=False)
+            outputs.extend(self._extract_best_person(res) for res in results)
+        return outputs
+
+    def _extract_best_person(self, res):
         if res.keypoints is None or len(res.keypoints) == 0:
             return None
         # 신뢰도 총합이 가장 높은 사람 1명 선택(투수만).
@@ -134,9 +81,93 @@ class YoloEngine:
         pass
 
 
+class RtmPoseEngine:
+    """MMPose RTMPose top-down 2D 추정기 래퍼."""
+
+    name = "rtmpose"
+    keypoint_names = COCO_KEYPOINTS
+    edges = COCO_EDGES
+
+    def __init__(self, config: str, checkpoint: str | None = None, device: str = "cuda:0", repo_dir: str | None = None):
+        repo_candidates = []
+        if repo_dir:
+            repo_candidates.append(repo_dir)
+        repo_candidates.extend([
+            str(Path(__file__).resolve().parents[1] / "mmpose-main" / "mmpose-main"),
+            str(Path(__file__).resolve().parents[2] / "mmpose-main" / "mmpose-main"),
+        ])
+        for candidate in repo_candidates:
+            if candidate and os.path.isdir(candidate) and candidate not in sys.path:
+                sys.path.insert(0, candidate)
+
+        self._config_or_alias = str(config)
+        self._checkpoint = checkpoint
+        self._device = device
+
+        if os.path.exists(self._config_or_alias):
+            from mmpose.apis import init_model, inference_topdown
+
+            self._init_model = init_model
+            self._inference_topdown = inference_topdown
+            self._model = init_model(self._config_or_alias, checkpoint, device=device)
+            self._inferencer = None
+        else:
+            from mmpose.apis import MMPoseInferencer
+
+            self._inferencer = MMPoseInferencer(
+                pose2d=self._config_or_alias,
+                pose2d_weights=checkpoint or None,
+                device=device,
+                det_model=None,
+                show_progress=False,
+            )
+            self._model = None
+        self._device = device
+
+    def _full_frame_bbox(self, frame_bgr):
+        height, width = frame_bgr.shape[:2]
+        return np.array([[0.0, 0.0, float(width), float(height)]], dtype=np.float32)
+
+    def estimate(self, frame_bgr):
+        if self._inferencer is not None:
+            results = next(self._inferencer(frame_bgr, return_datasamples=True, batch_size=1))
+            predictions = results.get("predictions") or []
+            return self._extract_first_person(predictions)
+        results = self._inference_topdown(self._model, frame_bgr, bboxes=self._full_frame_bbox(frame_bgr), bbox_format="xyxy")
+        return self._extract_first_person(results)
+
+    def estimate_batch(self, frames_bgr, batch_size=1):
+        outputs = []
+        for frame in frames_bgr:
+            outputs.append(self.estimate(frame))
+        return outputs
+
+    def _extract_first_person(self, results):
+        if not results:
+            return None
+        sample = results[0]
+        if isinstance(sample, dict):
+            sample = sample.get("predictions", [None])[0] if sample.get("predictions") else None
+        if sample is None or not hasattr(sample, "pred_instances"):
+            return None
+        instances = sample.pred_instances
+        if not hasattr(instances, "keypoints") or len(instances.keypoints) == 0:
+            return None
+        keypoints = np.asarray(instances.keypoints[0], dtype=np.float32)
+        if hasattr(instances, "keypoint_scores"):
+            scores = np.asarray(instances.keypoint_scores[0], dtype=np.float32)
+        else:
+            scores = np.ones((keypoints.shape[0],), dtype=np.float32)
+        out = np.concatenate([keypoints[:, :2], scores[:, None]], axis=1)
+        return out.astype(np.float32)
+
+    def close(self):
+        pass
+
+
 def build_engine(name: str, **kwargs):
-    if name == "mediapipe":
-        return MediaPipeEngine(**kwargs)
     if name == "yolo":
         return YoloEngine(**kwargs)
-    raise ValueError(f"unknown engine: {name!r} (mediapipe|yolo)")
+    if name == "rtmpose":
+        return RtmPoseEngine(**kwargs)
+    raise ValueError(f"unknown engine: {name!r} (expected yolo or rtmpose)")
